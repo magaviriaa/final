@@ -1,182 +1,102 @@
-
-
 import json
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, Any, List
-
-import streamlit as st
-
-# === Micrófono / STT (usa el componente streamlit-mic-recorder) ===
-# Instala antes:  pip install streamlit-mic-recorder
-try:
-    from streamlit_mic_recorder import speech_to_text, mic_recorder
-    MIC_OK = True
-except Exception:
-    MIC_OK = False
-
-# ==================== Datos simples ====================
-DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True)
-MEDS_FILE = DATA_DIR / "meds_simple.json"
-
-DEFAULT_MEDS = [
-    {"name": "Losartan 50mg", "compartment": 1},
-    {"name": "Metformina 500mg", "compartment": 2},
-]
-
-if MEDS_FILE.exists():
-    try:
-        MEDS = json.loads(MEDS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        MEDS = DEFAULT_MEDS
+st.session_state.led_on_since = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 else:
-    MEDS = DEFAULT_MEDS
-    MEDS_FILE.write_text(json.dumps(MEDS, ensure_ascii=False, indent=2), encoding="utf-8")
-
-# ==================== Puente de hardware (simulado) ====================
-class HwBridge:
-    """Reemplazar con implementación real (Serial/MQTT).
-    Protocolo sugerido (JSON):
-      → ESP32: {"type":"act","led":"on"|"off"}
-      → ESP32: {"type":"act","servo": <compartment:int>, "angle": 90}
-    """
-    def __init__(self):
-        self.led_state = "off"  # off|on
-        self.compartment_last = None
-
-    def set_led(self, state: str):
-        self.led_state = state
-        # Real: enviar por serial/mqtt
-        # serial.write(b'[{"type":"act","led":"%s"}]' % state.encode())
-
-    def open_compartment(self, idx: int):
-        self.compartment_last = idx
-        # Real: enviar {"type":"act","servo": idx, "angle": 90}
+st.write("No se detectó la palabra de atención en la transcripción.")
 
 
-if "hw" not in st.session_state:
-    st.session_state.hw = HwBridge()
-if "logs" not in st.session_state:
-    st.session_state.logs: List[Dict[str, Any]] = []
+# Auto-off simple por tiempo
+if 'led_on_since' in st.session_state and st.session_state.hw.led_state == 'on' and auto_off > 0:
+started = datetime.strptime(st.session_state.led_on_since, '%Y-%m-%d %H:%M:%S')
+if (datetime.now() - started).total_seconds() >= auto_off:
+st.session_state.hw.set_led('off')
+log('led_auto_off', {'after_sec': auto_off})
+st.session_state.pop('led_on_since', None)
 
 
-def log(evt: str, payload: Dict[str, Any] | None = None):
-    st.session_state.logs.insert(0, {
-        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "evt": evt,
-        "payload": payload or {}
-    })
+st.divider()
+st.subheader("Estado del LED")
+led_on = st.session_state.hw.led_state == 'on'
+status_color = '#22c55e' if led_on else '#475569'
+st.markdown(f'<span class="status-dot" style="background:{status_color}"></span>' + ("**ON**" if led_on else "**OFF**"), unsafe_allow_html=True)
+btn_cols = st.columns([1,1])
+if btn_cols[0].button("Apagar LED"):
+st.session_state.hw.set_led("off")
+log("led_off", {})
+if btn_cols[1].button("Encender LED (manual)"):
+st.session_state.hw.set_led("on")
+log("led_on_manual", {})
 
-# ==================== Página 1: Wake Word → LED ====================
 
-def page_wake_word():
-    st.title("🔔 Ayuda por Palabra de Atención")
+st.divider()
+st.subheader("Logs")
+for r in st.session_state.logs[:30]:
+st.write(f"`{r['ts']}` • **{r['evt']}** — {json.dumps(r['payload'], ensure_ascii=False)}")
 
-    st.write("Cuando el sistema escucha la *palabra de atención*, se enciende el LED de ayuda.")
-    st.caption("Ahora con micrófono real (STT). Si no funciona, verifica permisos del navegador o instala el paquete: `pip install streamlit-mic-recorder`.")
-
-    col = st.columns(2)
-    with col[0]:
-        wake = st.text_input("Palabra de atención", value="ayuda")
-    with col[1]:
-        auto_off = st.number_input("Apagado automático (seg)", 0, 300, 10)
-
-    st.divider()
-    st.subheader("🎙️ Escucha por micrófono")
-
-    if not MIC_OK:
-        st.error("No se encontró el componente de micrófono. Instala con: pip install streamlit-mic-recorder")
-        st.caption("Mientras tanto, puedes usar el campo de texto de abajo como simulación.")
-    else:
-        st.caption("Haz clic en el botón de micrófono, habla y espera a que aparezca el texto transcrito.")
-        # Captura de voz a texto (una sola frase). Language 'es' para español.
-        transcript = speech_to_text(
-            language='es',
-            use_container_width=True,
-            just_once=True,
-            key='stt_wake'
-        )
-        if transcript:
-            st.info(f"Transcripción: **{transcript}**")
-            if wake.lower() in transcript.lower():
-                st.session_state.hw.set_led("on")
-                log("led_on", {"wake": wake, "cmd": transcript, "source": "mic"})
-                st.success("LED de ayuda: ENCENDIDO (por voz)")
-            else:
-                st.write("No se detectó la palabra de atención en la transcripción.")
-
-    st.divider()
-    st.subheader("⌨️ Simulación por texto (fallback)")
-    cmd = st.text_input("Escribe algo… (ej: 'ayuda por favor')", value="")
-    c1, c2 = st.columns([1,1])
-    if c1.button("Procesar texto"):
-        if wake.lower() in cmd.lower():
-            st.session_state.hw.set_led("on")
-            log("led_on", {"wake": wake, "cmd": cmd, "source": "text"})
-            st.success("LED de ayuda: ENCENDIDO")
-        else:
-            st.info("No se detectó la palabra de atención.")
-
-    if c2.button("Apagar LED"):
-        st.session_state.hw.set_led("off")
-        log("led_off", {})
-
-    st.divider()
-    st.subheader("Estado del LED")
-    st.metric("LED", "🟢 ON" if st.session_state.hw.led_state == "on" else "⚪ OFF")
-
-    st.divider()
-    st.subheader("Logs")
-    for r in st.session_state.logs[:30]:
-        st.write(f"`{r['ts']}` • **{r['evt']}** — {json.dumps(r['payload'], ensure_ascii=False)}")
 
 # ==================== Página 2: Dispensador de Medicamentos ====================
 
+
 def page_dispenser():
-    st.title("💊 Dispensador de Medicamentos")
+st.title("💊 Señalador de Medicamentos (Servo)")
 
-    st.write("Cada medicamento tiene un botón físico en el mundo real. Al presionarlo, se abre la compuerta de su compartimento (servo). Aquí simulamos ese evento y mostramos el estado.")
 
-    # Lista editable simple (por si quieren renombrar)
-    with st.expander("Configurar medicamentos (simple)", expanded=False):
-        for i, m in enumerate(MEDS):
-            col = st.columns([3,1,1])
-            with col[0]:
-                m["name"] = st.text_input(f"Nombre #{i+1}", value=m["name"], key=f"mname{i}")
-            with col[1]:
-                m["compartment"] = st.number_input(f"Comp #{i+1}", 1, 8, value=int(m["compartment"]), key=f"mcomp{i}")
-        if st.button("Guardar lista"):
-            MEDS_FILE.write_text(json.dumps(MEDS, ensure_ascii=False, indent=2), encoding="utf-8")
-            st.success("Medicamentos guardados")
+st.write("Selecciona un medicamento y la palanca (servo) **lo señalará** con un ángulo específico. Para el demo usamos 3 medicamentos mapeados a 45°, 90° y 135°.")
 
-    st.divider()
-    st.subheader("Simular botón físico → abrir compuerta")
-    cols = st.columns(3)
-    for i, m in enumerate(MEDS):
-        with cols[i % 3]:
-            if st.button(f"Abrir {m['name']}"):
-                st.session_state.hw.open_compartment(m["compartment"])
-                log("open_compartment", {"name": m["name"], "compartment": m["compartment"]})
-                st.success(f"Compuerta {m['compartment']} abierta (simulado)")
 
-    st.divider()
-    st.subheader("Última acción")
-    last = st.session_state.hw.compartment_last
-    st.metric("Compuerta", f"#{last}" if last else "—")
+# Config sencilla de 3 medicamentos
+default_meds = [
+{"name": "Med A", "angle": 45},
+{"name": "Med B", "angle": 90},
+{"name": "Med C", "angle": 135},
+]
+if 'angle_meds' not in st.session_state:
+st.session_state.angle_meds = default_meds
 
-    st.divider()
-    st.subheader("Logs")
-    for r in st.session_state.logs[:30]:
-        st.write(f"`{r['ts']}` • **{r['evt']}** — {json.dumps(r['payload'], ensure_ascii=False)}")
+
+with st.expander("Configurar nombres/ángulos", expanded=False):
+for i, m in enumerate(st.session_state.angle_meds):
+c1, c2 = st.columns([3,1])
+m['name'] = c1.text_input(f"Nombre #{i+1}", value=m['name'], key=f"cfg_name_{i}")
+m['angle'] = c2.number_input(f"Ángulo #{i+1}", 0, 180, value=int(m['angle']), key=f"cfg_ang_{i}")
+st.caption("Sugeridos: 45°, 90°, 135°")
+
+
+st.divider()
+st.subheader("Señalar medicamento")
+cols = st.columns(3)
+for i, m in enumerate(st.session_state.angle_meds):
+with cols[i % 3]:
+st.markdown(f"<div class='card'><div class='title'>{m['name']}</div><div class='muted'>Ángulo: {m['angle']}°</div></div>", unsafe_allow_html=True)
+if st.button(f"Señalar {m['name']}"):
+st.session_state.hw.point_servo(m['angle'], med_name=m['name'])
+log("point_med", {"name": m['name'], "angle": m['angle']})
+st.success(f"Servo apuntando a {m['name']} ({m['angle']}°)")
+
+
+st.divider()
+st.subheader("Estado del servo")
+st.metric("Ángulo", f"{st.session_state.hw.servo_angle}°")
+st.caption(f"Último seleccionado: {st.session_state.hw.last_med or '—'}")
+
+
+st.divider()
+st.subheader("Logs")
+for r in st.session_state.logs[:30]:
+st.write(f"`{r['ts']}` • **{r['evt']}** — {json.dumps(r['payload'], ensure_ascii=False)}")
+for r in st.session_state.logs[:30]:
+st.write(f"`{r['ts']}` • **{r['evt']}** — {json.dumps(r['payload'], ensure_ascii=False)}")
+
 
 # ==================== App ====================
 
+
 st.set_page_config(page_title="Demo 2 Funciones", page_icon="🧓", layout="wide")
 with st.sidebar:
-    st.header("Demo 2 Funciones")
-    page = st.radio("Ir a…", ["Wake Word → LED", "Dispensador"])
+st.header("Demo 2 Funciones")
+page = st.radio("Ir a…", ["Wake Word → LED", "Dispensador"])
+
 
 if page == "Wake Word → LED":
-    page_wake_word()
+page_wake_word()
 else:
-    page_dispenser()
+page_dispenser()
