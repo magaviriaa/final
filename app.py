@@ -2,12 +2,7 @@
 Streamlit – Versión Simple (2 funciones / 2 páginas)
 ---------------------------------------------------
 Función A (Página 1): "Wake word" (palabra de atención) → enciende LED de ayuda.
-Función B (Página 2): Botón físico por medicamento → abre compuerta (servo) del
-compartimento correspondiente.
-
-Esta plantilla es mínima para la rúbrica: 2 páginas, 2 modalidades (voz/texto y botón físico),
-y vínculo con mundo físico (LED + servo). Incluye un puente HW simulado; cambienlo por
-Serial/MQTT para WOKWI/ESP32.
+Función B (Página 2): Señalar medicamento con servo a 45°/90°/135°.
 
 Cómo correr:
   streamlit run app_simple.py
@@ -17,33 +12,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List
-import paho.mqtt.client as mqtt
 
 import streamlit as st
-
-# --- MQTT (publicar a Wokwi) ---
-import os
-import paho.mqtt.client as mqtt
-
-BROKER = "test.mosquitto.org"      # puedes cambiarlo por tu broker
-TOPIC_LED = "migue/demo/led"       # ¡cámbialo por algo único, ej: migue/<tuusuario>/led
-TOPIC_SERVO = "migue/demo/servo"   # idem: migue/<tuusuario>/servo
-
-_mqtt = None
-def _get_client():
-    global _mqtt
-    if _mqtt is None:
-        c = mqtt.Client(client_id=f"streamlit-{os.getpid()}")
-        c.connect(BROKER, 1883, 60)
-        _mqtt = c
-    return _mqtt
-
-def mqtt_led(on: bool):
-    _get_client().publish(TOPIC_LED, "on" if on else "off", qos=0, retain=False)
-
-def mqtt_servo(angle: int):
-    _get_client().publish(TOPIC_SERVO, str(int(angle)), qos=0, retain=False)
-
 
 # ==== Mini estilos (UI) ====
 st.markdown(
@@ -66,13 +36,41 @@ try:
 except Exception:
     MIC_OK = False
 
+# === MQTT opcional (para Wokwi/ESP32). Si no está instalado, se ignora y queda en modo simulado ===
+# pip install paho-mqtt  (opcional)
+MQTT_OK = False
+try:
+    import os
+    import paho.mqtt.client as mqtt
+    MQTT_OK = True
+except Exception:
+    MQTT_OK = False
+
+BROKER = "test.mosquitto.org"
+TOPIC_LED = "migue/demo/led"       # cambia por algo único si quieres
+TOPIC_SERVO = "migue/demo/servo"   # idem
+
+def _mqtt_client():
+    """Cliente MQTT singleton (si paho está disponible)."""
+    if not MQTT_OK:
+        return None
+    if "_mqtt" not in st.session_state:
+        c = mqtt.Client(client_id=f"streamlit-{os.getpid()}")
+        try:
+            c.connect(BROKER, 1883, 60)
+            st.session_state._mqtt = c
+        except Exception:
+            st.session_state._mqtt = None
+    return st.session_state._mqtt
+
 # ==================== Datos simples ====================
 DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True)
 MEDS_FILE = DATA_DIR / "meds_simple.json"
 
 DEFAULT_MEDS = [
-    {"name": "Losartan 50mg", "compartment": 1},
-    {"name": "Metformina 500mg", "compartment": 2},
+    {"name": "Losartan 50mg", "angle": 45},
+    {"name": "Metformina 500mg", "angle": 90},
+    {"name": "Vitamina D 1000UI", "angle": 135},
 ]
 
 if MEDS_FILE.exists():
@@ -84,35 +82,39 @@ else:
     MEDS = DEFAULT_MEDS
     MEDS_FILE.write_text(json.dumps(MEDS, ensure_ascii=False, indent=2), encoding="utf-8")
 
-# ==================== Puente de hardware (simulado) ====================
+# ==================== Puente de hardware (simulado + MQTT opcional) ====================
 class HwBridge:
     """Reemplazar con implementación real (Serial/MQTT).
     Protocolo sugerido (JSON):
-      LED:  {"type":"act","led":"on"|"off"}
-      Servo: {"type":"act","servo_angle": <0-180>}
+      LED:   {"type":"act","led":"on"|"off"}      -> aquí publicamos: topic TOPIC_LED  (on/off)
+      Servo: {"type":"act","servo_angle": 0..180} -> aquí publicamos: topic TOPIC_SERVO (entero)
     """
     def __init__(self):
         self.led_state = "off"  # off|on
         self.servo_angle = 0
         self.last_med = None
 
-  def set_led(on: bool, reason: str = ""):
-    st.session_state.led_on = on
-    st.session_state.last_command = f"{'ON' if on else 'OFF'} @ {datetime.now().strftime('%H:%M:%S')} {reason}".strip()
-    # >>> envia a Wokwi:
-    try:
-        mqtt_led(on)
-    except Exception as e:
-        st.warning(f"MQTT no disponible: {e}")
+    def set_led(self, state: str):
+        self.led_state = state
+        # MQTT opcional
+        client = _mqtt_client()
+        if client is not None:
+            try:
+                client.publish(TOPIC_LED, "on" if state == "on" else "off", qos=0, retain=False)
+            except Exception:
+                pass
 
- def set_servo(angle: int, reason: str = ""):
-    st.session_state.servo_angle = angle
-    st.session_state.last_command = f"Servo → {angle}° @ {datetime.now().strftime('%H:%M:%S')} {reason}".strip()
-    # >>> envia a Wokwi:
-    try:
-        mqtt_servo(angle)
-    except Exception as e:
-        st.warning(f"MQTT no disponible: {e}")
+    def point_servo(self, angle: int, med_name: str | None = None):
+        self.servo_angle = int(angle)
+        self.last_med = med_name
+        # MQTT opcional
+        client = _mqtt_client()
+        if client is not None:
+            try:
+                client.publish(TOPIC_SERVO, str(int(angle)), qos=0, retain=False)
+            except Exception:
+                pass
+
 
 if "hw" not in st.session_state:
     st.session_state.hw = HwBridge()
@@ -183,7 +185,7 @@ def page_wake_word():
     for r in st.session_state.logs[:30]:
         st.write(f"`{r['ts']}` • **{r['evt']}** — {json.dumps(r['payload'], ensure_ascii=False)}")
 
-# ==================== Página 2: Dispensador de Medicamentos ====================
+# ==================== Página 2: Señalar Medicamentos ====================
 
 def page_dispenser():
     st.title("💊 Señalador de Medicamentos (Servo)")
@@ -191,13 +193,12 @@ def page_dispenser():
     st.write("Selecciona un medicamento y la palanca (servo) **lo señalará** con un ángulo específico. Para el demo usamos 3 medicamentos mapeados a 45°, 90° y 135°.")
 
     # Config sencilla de 3 medicamentos
-    default_meds = [
-        {"name": "Med A", "angle": 45},
-        {"name": "Med B", "angle": 90},
-        {"name": "Med C", "angle": 135},
-    ]
     if 'angle_meds' not in st.session_state:
-        st.session_state.angle_meds = default_meds
+        st.session_state.angle_meds = [
+            {"name": "Med A", "angle": 45},
+            {"name": "Med B", "angle": 90},
+            {"name": "Med C", "angle": 135},
+        ]
 
     with st.expander("Configurar nombres/ángulos", expanded=False):
         for i, m in enumerate(st.session_state.angle_meds):
@@ -233,9 +234,12 @@ st.set_page_config(page_title="Demo 2 Funciones", page_icon="🧓", layout="wide
 with st.sidebar:
     st.header("Demo 2 Funciones")
     page = st.radio("Ir a…", ["Wake Word → LED", "Dispensador"])
+    if MQTT_OK:
+        st.caption("MQTT activo: publicando a test.mosquitto.org")
+    else:
+        st.caption("MQTT desactivado (modo simulado)")
 
 if page == "Wake Word → LED":
     page_wake_word()
 else:
     page_dispenser()
-
