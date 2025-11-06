@@ -1,232 +1,210 @@
-import streamlit as st
+"""
+Streamlit – Versión Simple (2 funciones / 2 páginas)
+---------------------------------------------------
+Función A (Página 1): "Wake word" (palabra de atención) → enciende LED de ayuda.
+Función B (Página 2): Botón físico por medicamento → abre compuerta (servo) del
+compartimento correspondiente.
+
+Esta plantilla es mínima para la rúbrica: 2 páginas, 2 modalidades (voz/texto y botón físico),
+y vínculo con mundo físico (LED + servo). Incluye un puente HW simulado; cambienlo por
+Serial/MQTT para WOKWI/ESP32.
+
+Cómo correr:
+  streamlit run app_simple.py
+"""
+
+import json
 from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any, List
 
-# --------- CONFIG BÁSICA + THEME ---------
-st.set_page_config(page_title="Demo Multimodal – Casa Asistiva", page_icon="💡", layout="wide")
+import streamlit as st
 
-# CSS simple para look & feel
-st.markdown("""
-<style>
-:root { --bg:#0b1220; --card:#0f172a; --muted:#64748b; --ok:#22c55e; --off:#475569; --accent:#7c3aed;}
-body {background: var(--bg);}
-.block-container {padding-top: 2rem; max-width: 1100px;}
-.small {color: var(--muted); font-size: 0.9rem;}
-.badge {display:inline-block; padding:.25rem .5rem; border-radius:999px; background:#1f2937; color:#e5e7eb; font-size:.8rem;}
-.led {width:14px; height:14px; border-radius:50%; display:inline-block; margin-right:.4rem; vertical-align:middle;}
-.card {background: var(--card); padding:1rem 1.25rem; border-radius:14px; border:1px solid #1f2937;}
-.title {font-weight:700; font-size:1.4rem;}
-.btn-row button {margin-right:.5rem;}
-</style>
-""", unsafe_allow_html=True)
-
-# --------- ESTADO GLOBAL ---------
-if "led_on" not in st.session_state:
-    st.session_state.led_on = False
-
-if "last_command" not in st.session_state:
-    st.session_state.last_command = None
-
-if "servo_angle" not in st.session_state:
-    st.session_state.servo_angle = 0  # grados
-
-# --------- HELPERS ---------
-def set_led(on: bool, reason: str = ""):
-    st.session_state.led_on = on
-    st.session_state.last_command = f"{'ON' if on else 'OFF'} @ {datetime.now().strftime('%H:%M:%S')} {reason}".strip()
-
-def set_servo(angle: int, reason: str = ""):
-    st.session_state.servo_angle = angle
-    st.session_state.last_command = f"Servo → {angle}° @ {datetime.now().strftime('%H:%M:%S')} {reason}".strip()
-
-# --------- SIDEBAR / NAVEGACIÓN ---------
-page = st.sidebar.radio(
-    "Navegación",
-    ["🔊 Ayuda por palabra de atención", "💊 Señalar medicamento (servo)"],
-    help="Dos flujos independientes para cumplir el proyecto."
+# ==== Mini estilos (UI) ====
+st.markdown(
+    """
+    <style>
+      .card{background:#11151a;border:1px solid #1f2937;border-radius:16px;padding:18px;margin-bottom:14px}
+      .title{font-size:1.2rem;font-weight:700;margin-bottom:6px}
+      .muted{color:#9aa6b2;font-size:0.9rem}
+      .status-dot{width:16px;height:16px;border-radius:50%;display:inline-block;margin-right:8px}
+    </style>
+    """,
+    unsafe_allow_html=True
 )
-st.sidebar.markdown("<span class='badge'>Demo local</span>  •  Wokwi/Arduino en clase", unsafe_allow_html=True)
 
-# =========================================================
-#  PÁGINA 1: AYUDA POR PALABRA DE ATENCIÓN (MICRÓFONO)
-# =========================================================
-if page.startswith("🔊"):
-    st.markdown("### 🔊 Palabra de atención → Enciende LED de ayuda")
-    st.markdown(
-        "<p class='small'>Cuando el sistema detecte la palabra de atención por voz, "
-        "encenderá el LED de ayuda. Para la demo usamos reconocimiento en el navegador.</p>",
-        unsafe_allow_html=True
-    )
+# === Micrófono / STT (usa el componente streamlit-mic-recorder) ===
+# Instala antes:  pip install streamlit-mic-recorder
+try:
+    from streamlit_mic_recorder import speech_to_text, mic_recorder
+    MIC_OK = True
+except Exception:
+    MIC_OK = False
 
-    # ------ Indicador LED (usa session_state SIEMPRE) ------
-    status_color = '#22c55e' if st.session_state.led_on else '#475569'
-    st.markdown(
-        f"<div class='card'><span class='title'>Estado LED: "
-        f"<span class='led' style='background:{status_color}'></span>"
-        f"{'Encendido' if st.session_state.led_on else 'Apagado'}</span>"
-        f"<div class='small'>Último evento: {st.session_state.last_command or '—'}</div></div>",
-        unsafe_allow_html=True
-    )
+# ==================== Datos simples ====================
+DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True)
+MEDS_FILE = DATA_DIR / "meds_simple.json"
 
-    # ------ Controles manuales (útiles para probar rápidamente) ------
-    colA, colB = st.columns([1,1])
-    with colA:
-        if st.button("Encender LED (prueba)"):
-            set_led(True, "(botón)")
-    with colB:
-        if st.button("Apagar LED"):
-            set_led(False, "(botón)")
+DEFAULT_MEDS = [
+    {"name": "Losartan 50mg", "compartment": 1},
+    {"name": "Metformina 500mg", "compartment": 2},
+]
 
-    st.divider()
-
-    # ------ Captura de voz en el navegador con Web Speech API ------
-    # Esto corre en el cliente y se comunica vía componentes JS <-> Streamlit.
-    # No requiere instalar pyaudio en tu PC.
-    attn_word = st.text_input("Palabra de atención", value="ayuda", help="Di esta palabra para encender el LED.")
-    st.markdown("<div class='small'>Haz clic en <b>Iniciar escucha</b> y permite el micrófono en el navegador.</div>", unsafe_allow_html=True)
-
-    start = st.button("🎙️ Iniciar escucha")
-    stop = st.button("⏹️ Detener escucha")
-
-    # Componente JS mínimo para Web Speech API
-    st.markdown("""
-    <script>
-    const s = window.streamlitSpeechComp || {recognizer:null, listening:false};
-    function startRec(attn){
-      try{
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if(!SpeechRecognition){ window.parent.postMessage({type:'st_comm', key:'voice_err', value:'API no soportada'}, '*'); return; }
-        s.recognizer = new SpeechRecognition();
-        s.recognizer.lang = 'es-ES';
-        s.recognizer.continuous = true;
-        s.recognizer.interimResults = false;
-        s.recognizer.onresult = (e)=>{
-          const txt = e.results[e.results.length-1][0].transcript.trim().toLowerCase();
-          window.parent.postMessage({type:'st_comm', key:'voice_txt', value:txt}, '*');
-          if (txt.includes(attn.toLowerCase())) {
-            window.parent.postMessage({type:'st_comm', key:'voice_hit', value:txt}, '*');
-          }
-        };
-        s.recognizer.onend = ()=>{ s.listening=false; window.parent.postMessage({type:'st_comm', key:'voice_state', value:'stopped'}, '*'); };
-        s.recognizer.start(); s.listening = true;
-        window.parent.postMessage({type:'st_comm', key:'voice_state', value:'started'}, '*');
-      }catch(err){ window.parent.postMessage({type:'st_comm', key:'voice_err', value:String(err)}, '*'); }
-    }
-    function stopRec(){ if(s.recognizer){ s.recognizer.stop(); } }
-    window.streamlitSpeechComp = s;
-
-    // Puente de mensajes
-    window.addEventListener('message',(ev)=>{
-      const d = ev.data;
-      if(d?.type==='streamlit:setComponentValue'){ /* no-op */ }
-    });
-
-    // Botones controlados por Streamlit (marcadores que escribimos abajo)
-    </script>
-    """, unsafe_allow_html=True)
-
-    # Marcadores / triggers
-    if start:
-        # Iniciar con la palabra de atención que puso el usuario
-        st.markdown(f"<script>startRec({repr(attn_word)});</script>", unsafe_allow_html=True)
-    if stop:
-        st.markdown("<script>stopRec();</script>", unsafe_allow_html=True)
-
-    # Receptor de los mensajes del cliente
-    # (truco: usamos st.experimental_data_editor invisible para forzar reruns con postMessage,
-    # pero aquí bastará con un write-js que llame a /?voice_hit=1 vía hash; lo simple:)
-    st.markdown("""
-    <script>
-    window.addEventListener('message', (e)=>{
-      const d = e.data || {};
-      if(d.type==='st_comm' && d.key==='voice_hit'){
-        fetch(window.location.href, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action:'LED_ON_VOICE'})})
-        .then(()=>{ window.location.reload(); });
-      }
-    });
-    </script>
-    """, unsafe_allow_html=True)
-
-    # Procesar POST para encender LED al detectar la palabra
+if MEDS_FILE.exists():
     try:
-        import os, json, sys
-        if st.session_state.get("_did_hook") is None:
-            from streamlit.web.server.websocket_headers import _get_websocket_headers as _ws
-            st.session_state["_did_hook"] = True  # solo una vez
-        # Si el servidor no expone body fácil, ignoramos; mantenemos compatibilidad:
-        # La recarga de la página ya refleja cambios de estado.
+        MEDS = json.loads(MEDS_FILE.read_text(encoding="utf-8"))
     except Exception:
-        pass
-
-    # Fallback server-side (ligero): si recargó con un marker en la URL, no lo usamos ahora.
-
-    # Mini hack para mostrar instrucción clara
-    st.info("Di la palabra de atención (por ejemplo **ayuda**) para encender el LED. Usa los botones si quieres probar sin voz.")
-
-# =========================================================
-#  PÁGINA 2: SEÑALAR MEDICAMENTO (SERVO 45° / 90° / 135°)
-# =========================================================
+        MEDS = DEFAULT_MEDS
 else:
-    st.markdown("### 💊 Señalar medicamento con un servo (3 posiciones)")
-    st.markdown("<p class='small'>En el prototipo, la ‘palanca’ será un servo que apunta al medicamento seleccionado.</p>", unsafe_allow_html=True)
+    MEDS = DEFAULT_MEDS
+    MEDS_FILE.write_text(json.dumps(MEDS, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    with st.container():
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        col1, col2 = st.columns([2,1])
+# ==================== Puente de hardware (simulado) ====================
+class HwBridge:
+    """Reemplazar con implementación real (Serial/MQTT).
+    Protocolo sugerido (JSON):
+      LED:  {"type":"act","led":"on"|"off"}
+      Servo: {"type":"act","servo_angle": <0-180>}
+    """
+    def __init__(self):
+        self.led_state = "off"  # off|on
+        self.servo_angle = 0
+        self.last_med = None
 
-        with col1:
-            med = st.selectbox(
-                "Selecciona el medicamento",
-                ["— Selecciona —", "Analgésico (45°)", "Antibiótico (90°)", "Vitaminas (135°)"]
-            )
-            colA, colB, colC = st.columns(3)
-            with colA:
-                if st.button("Analgésico → 45°"):
-                    set_servo(45, "(botón)")
-            with colB:
-                if st.button("Antibiótico → 90°"):
-                    set_servo(90, "(botón)")
-            with colC:
-                if st.button("Vitaminas → 135°"):
-                    set_servo(135, "(botón)")
+    def set_led(self, state: str):
+        self.led_state = state
+        # Real: enviar por serial/mqtt
+        # serial.write(json.dumps({"type":"act","led":state}).encode())
 
-            # Si usan el selectbox en lugar de botones
-            map_angles = {
-                "Analgésico (45°)": 45,
-                "Antibiótico (90°)": 90,
-                "Vitaminas (135°)": 135
-            }
-            if med in map_angles:
-                set_servo(map_angles[med], "(selector)")
+    def point_servo(self, angle: int, med_name: str|None=None):
+        self.servo_angle = int(angle)
+        self.last_med = med_name
+        # Real: enviar {"type":"act","servo_angle": angle}
 
-        with col2:
-            # Visual del ángulo
-            st.markdown("<div class='title'>Estado servo</div>", unsafe_allow_html=True)
-            st.metric("Ángulo actual", f"{st.session_state.servo_angle}°")
-            st.markdown(f"<div class='small'>Último evento: {st.session_state.last_command or '—'}</div>", unsafe_allow_html=True)
 
-        st.markdown("</div>", unsafe_allow_html=True)
+if "hw" not in st.session_state:
+    st.session_state.hw = HwBridge()
+if "logs" not in st.session_state:
+    st.session_state.logs: List[Dict[str, Any]] = []
+
+
+def log(evt: str, payload: Dict[str, Any] | None = None):
+    st.session_state.logs.insert(0, {
+        "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "evt": evt,
+        "payload": payload or {}
+    })
+
+# ==================== Página 1: Wake Word → LED ====================
+
+def page_wake_word():
+    st.title("🔔 Ayuda por Palabra de Atención")
+
+    st.write("Cuando el sistema escucha la *palabra de atención*, se enciende el LED de ayuda.")
+    st.caption("Funciona con tu micrófono usando **streamlit-mic-recorder**. Da permisos al navegador.")
+
+    col = st.columns(2)
+    with col[0]:
+        wake = st.text_input("Palabra de atención", value="ayuda")
+    with col[1]:
+        auto_off = st.number_input("Apagado automático (seg)", 0, 300, 10)
+
+    st.markdown('<div class="card"><div class="title">🎙️ Escucha por micrófono</div><div class="muted">Di la palabra de atención para encender el LED.</div></div>', unsafe_allow_html=True)
+
+    if not MIC_OK:
+        st.error("No se encontró el componente de micrófono. Instala con: pip install streamlit-mic-recorder")
+    else:
+        transcript = speech_to_text(language='es', use_container_width=True, just_once=True, key='stt_wake')
+        if transcript:
+            st.info(f"Transcripción: **{transcript}**")
+            if wake.lower() in transcript.lower():
+                st.session_state.hw.set_led("on")
+                log("led_on", {"wake": wake, "cmd": transcript, "source": "mic"})
+                st.success("LED de ayuda: ENCENDIDO por voz")
+                st.session_state.led_on_since = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                st.write("No se detectó la palabra de atención en la transcripción.")
+
+    # Auto-off simple por tiempo
+    if 'led_on_since' in st.session_state and st.session_state.hw.led_state == 'on' and auto_off > 0:
+        started = datetime.strptime(st.session_state.led_on_since, '%Y-%m-%d %H:%M:%S')
+        if (datetime.now() - started).total_seconds() >= auto_off:
+            st.session_state.hw.set_led('off')
+            log('led_auto_off', {'after_sec': auto_off})
+            st.session_state.pop('led_on_since', None)
 
     st.divider()
-    st.markdown(
-        "<p class='small'>Integración con hardware: envía el ángulo al Arduino/Wokwi por "
-        "Serial o HTTP (según tu setup). Dejo el esqueleto de función a continuación.</p>",
-        unsafe_allow_html=True
-    )
+    st.subheader("Estado del LED")
+    led_on = st.session_state.hw.led_state == 'on'
+status_color = '#22c55e' if led_on else '#475569'
+st.markdown(f'<span class="status-dot" style="background:{status_color}"></span>' + ("**ON**" if led_on else "**OFF**"), unsafe_allow_html=True)
+btn_cols = st.columns([1,1])
+if btn_cols[0].button("Apagar LED"):
+    st.session_state.hw.set_led("off")
+    log("led_off", {})
+if btn_cols[1].button("Encender LED (manual)"):
+    st.session_state.hw.set_led("on")
+    log("led_on_manual", {})
 
-    with st.expander("Ver ejemplo de stub para enviar al microcontrolador"):
-        st.code("""
-import requests  # si usas firmware con endpoint HTTP (Wokwi o ESP32/ESP8266)
-# O usa pyserial si es por USB: import serial
+    st.divider()
+    st.subheader("Logs")
+    for r in st.session_state.logs[:30]:
+        st.write(f"`{r['ts']}` • **{r['evt']}** — {json.dumps(r['payload'], ensure_ascii=False)}")
 
-def send_angle_to_device(angle:int):
-    # EJEMPLO HTTP:
-    # url = "http://<ip-o-url-del-dispositivo>/servo"
-    # requests.post(url, json={"angle": angle}, timeout=2)
+# ==================== Página 2: Dispensador de Medicamentos ====================
 
-    # EJEMPLO SERIAL:
-    # ser = serial.Serial('COM3', 9600, timeout=1)
-    # ser.write(f"{angle}\\n".encode())
-    # ser.close()
-    pass
-        """, language="python")
+def page_dispenser():
+    st.title("💊 Señalador de Medicamentos (Servo)")
 
+    st.write("Selecciona un medicamento y la palanca (servo) **lo señalará** con un ángulo específico. Para el demo usamos 3 medicamentos mapeados a 45°, 90° y 135°.")
+
+    # Config sencilla de 3 medicamentos
+    default_meds = [
+        {"name": "Med A", "angle": 45},
+        {"name": "Med B", "angle": 90},
+        {"name": "Med C", "angle": 135},
+    ]
+    if 'angle_meds' not in st.session_state:
+        st.session_state.angle_meds = default_meds
+
+    with st.expander("Configurar nombres/ángulos", expanded=False):
+        for i, m in enumerate(st.session_state.angle_meds):
+            c1, c2 = st.columns([3,1])
+            m['name'] = c1.text_input(f"Nombre #{i+1}", value=m['name'], key=f"cfg_name_{i}")
+            m['angle'] = c2.number_input(f"Ángulo #{i+1}", 0, 180, value=int(m['angle']), key=f"cfg_ang_{i}")
+        st.caption("Sugeridos: 45°, 90°, 135°")
+
+    st.divider()
+    st.subheader("Señalar medicamento")
+    cols = st.columns(3)
+    for i, m in enumerate(st.session_state.angle_meds):
+        with cols[i % 3]:
+            st.markdown(f"<div class='card'><div class='title'>{m['name']}</div><div class='muted'>Ángulo: {m['angle']}°</div></div>", unsafe_allow_html=True)
+            if st.button(f"Señalar {m['name']}"):
+                st.session_state.hw.point_servo(m['angle'], med_name=m['name'])
+                log("point_med", {"name": m['name'], "angle": m['angle']})
+                st.success(f"Servo apuntando a {m['name']} ({m['angle']}°)")
+
+    st.divider()
+    st.subheader("Estado del servo")
+    st.metric("Ángulo", f"{st.session_state.hw.servo_angle}°")
+    st.caption(f"Último seleccionado: {st.session_state.hw.last_med or '—'}")
+
+    st.divider()
+    st.subheader("Logs")
+    for r in st.session_state.logs[:30]:
+        st.write(f"`{r['ts']}` • **{r['evt']}** — {json.dumps(r['payload'], ensure_ascii=False)}")
+    for r in st.session_state.logs[:30]:
+        st.write(f"`{r['ts']}` • **{r['evt']}** — {json.dumps(r['payload'], ensure_ascii=False)}")
+
+# ==================== App ====================
+
+st.set_page_config(page_title="Demo 2 Funciones", page_icon="🧓", layout="wide")
+with st.sidebar:
+    st.header("Demo 2 Funciones")
+    page = st.radio("Ir a…", ["Wake Word → LED", "Dispensador"])
+
+if page == "Wake Word → LED":
+    page_wake_word()
+else:
+    page_dispenser()
