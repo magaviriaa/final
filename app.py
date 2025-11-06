@@ -1,17 +1,4 @@
-"""
-Streamlit – Versión Simple (2 funciones / 2 páginas)
----------------------------------------------------
-Función A (Página 1): "Wake word" (palabra de atención) → enciende LED de ayuda.
-Función B (Página 2): Botón físico por medicamento → abre compuerta (servo) del
-compartimento correspondiente.
 
-Esta plantilla es mínima para la rúbrica: 2 páginas, 2 modalidades (voz/texto y botón físico),
-y vínculo con mundo físico (LED + servo). Incluye un puente HW simulado; cambienlo por
-Serial/MQTT para WOKWI/ESP32.
-
-Cómo correr:
-  streamlit run app_simple.py
-"""
 
 import json
 from datetime import datetime
@@ -19,6 +6,14 @@ from pathlib import Path
 from typing import Dict, Any, List
 
 import streamlit as st
+
+# === Micrófono / STT (usa el componente streamlit-mic-recorder) ===
+# Instala antes:  pip install streamlit-mic-recorder
+try:
+    from streamlit_mic_recorder import speech_to_text, mic_recorder
+    MIC_OK = True
+except Exception:
+    MIC_OK = False
 
 # ==================== Datos simples ====================
 DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True)
@@ -78,9 +73,8 @@ def page_wake_word():
     st.title("🔔 Ayuda por Palabra de Atención")
 
     st.write("Cuando el sistema escucha la *palabra de atención*, se enciende el LED de ayuda.")
-    st.caption("En demo usamos texto como si fuera STT. En producción: micrófono + STT.")
+    st.caption("Ahora con micrófono real (STT). Si no funciona, verifica permisos del navegador o instala el paquete: `pip install streamlit-mic-recorder`.")
 
-    # Configuración mínima
     col = st.columns(2)
     with col[0]:
         wake = st.text_input("Palabra de atención", value="ayuda")
@@ -88,13 +82,37 @@ def page_wake_word():
         auto_off = st.number_input("Apagado automático (seg)", 0, 300, 10)
 
     st.divider()
-    st.subheader("Simulación de escucha (STT → texto)")
-    cmd = st.text_input("Di algo… (ej: 'ayuda por favor')", value="")
+    st.subheader("🎙️ Escucha por micrófono")
+
+    if not MIC_OK:
+        st.error("No se encontró el componente de micrófono. Instala con: pip install streamlit-mic-recorder")
+        st.caption("Mientras tanto, puedes usar el campo de texto de abajo como simulación.")
+    else:
+        st.caption("Haz clic en el botón de micrófono, habla y espera a que aparezca el texto transcrito.")
+        # Captura de voz a texto (una sola frase). Language 'es' para español.
+        transcript = speech_to_text(
+            language='es',
+            use_container_width=True,
+            just_once=True,
+            key='stt_wake'
+        )
+        if transcript:
+            st.info(f"Transcripción: **{transcript}**")
+            if wake.lower() in transcript.lower():
+                st.session_state.hw.set_led("on")
+                log("led_on", {"wake": wake, "cmd": transcript, "source": "mic"})
+                st.success("LED de ayuda: ENCENDIDO (por voz)")
+            else:
+                st.write("No se detectó la palabra de atención en la transcripción.")
+
+    st.divider()
+    st.subheader("⌨️ Simulación por texto (fallback)")
+    cmd = st.text_input("Escribe algo… (ej: 'ayuda por favor')", value="")
     c1, c2 = st.columns([1,1])
-    if c1.button("Procesar entrada"):
+    if c1.button("Procesar texto"):
         if wake.lower() in cmd.lower():
             st.session_state.hw.set_led("on")
-            log("led_on", {"wake": wake, "cmd": cmd})
+            log("led_on", {"wake": wake, "cmd": cmd, "source": "text"})
             st.success("LED de ayuda: ENCENDIDO")
         else:
             st.info("No se detectó la palabra de atención.")
