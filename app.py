@@ -136,15 +136,15 @@ def page_wake_word():
     st.divider()
     st.subheader("Estado del LED")
     led_on = st.session_state.hw.led_state == 'on'
-status_color = '#22c55e' if led_on else '#475569'
-st.markdown(f'<span class="status-dot" style="background:{status_color}"></span>' + ("**ON**" if led_on else "**OFF**"), unsafe_allow_html=True)
-btn_cols = st.columns([1,1])
-if btn_cols[0].button("Apagar LED"):
-    st.session_state.hw.set_led("off")
-    log("led_off", {})
-if btn_cols[1].button("Encender LED (manual)"):
-    st.session_state.hw.set_led("on")
-    log("led_on_manual", {})
+    status_color = '#22c55e' if led_on else '#475569'
+    st.markdown(f'<span class="status-dot" style="background:{status_color}"></span>' + ("**ON**" if led_on else "**OFF**"), unsafe_allow_html=True)
+    btn_cols = st.columns([1,1])
+    if btn_cols[0].button("Apagar LED"):
+        st.session_state.hw.set_led("off")
+        log("led_off", {})
+    if btn_cols[1].button("Encender LED (manual)"):
+        st.session_state.hw.set_led("on")
+        log("led_on_manual", {})
 
     st.divider()
     st.subheader("Logs")
@@ -192,8 +192,6 @@ def page_dispenser():
 
     st.divider()
     st.subheader("Logs")
-    for r in st.session_state.logs[:30]:
-        st.write(f"`{r['ts']}` • **{r['evt']}** — {json.dumps(r['payload'], ensure_ascii=False)}")
     for r in st.session_state.logs[:30]:
         st.write(f"`{r['ts']}` • **{r['evt']}** — {json.dumps(r['payload'], ensure_ascii=False)}")
 
