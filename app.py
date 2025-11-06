@@ -17,6 +17,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List
+import paho.mqtt.client as mqtt
 
 import streamlit as st
 
@@ -206,3 +207,25 @@ if page == "Wake Word → LED":
     page_wake_word()
 else:
     page_dispenser()
+
+BROKER = "test.mosquitto.org"
+TOPIC_LED = "migue/demo/led"
+TOPIC_SERVO = "migue/demo/servo"
+
+_client = None
+def mqtt_client():
+    global _client
+    if _client: return _client
+    c = mqtt.Client(client_id="streamlit-"+__name__)
+    c.connect(BROKER, 1883, 60)
+    _client = c
+    return c
+
+def led_on():
+    mqtt_client().publish(TOPIC_LED, "on", qos=0, retain=False)
+
+def led_off():
+    mqtt_client().publish(TOPIC_LED, "off", qos=0, retain=False)
+
+def servo_to(angle:int):
+    mqtt_client().publish(TOPIC_SERVO, str(int(angle)), qos=0, retain=False)
