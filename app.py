@@ -21,6 +21,30 @@ import paho.mqtt.client as mqtt
 
 import streamlit as st
 
+# --- MQTT (publicar a Wokwi) ---
+import os
+import paho.mqtt.client as mqtt
+
+BROKER = "test.mosquitto.org"      # puedes cambiarlo por tu broker
+TOPIC_LED = "migue/demo/led"       # ¡cámbialo por algo único, ej: migue/<tuusuario>/led
+TOPIC_SERVO = "migue/demo/servo"   # idem: migue/<tuusuario>/servo
+
+_mqtt = None
+def _get_client():
+    global _mqtt
+    if _mqtt is None:
+        c = mqtt.Client(client_id=f"streamlit-{os.getpid()}")
+        c.connect(BROKER, 1883, 60)
+        _mqtt = c
+    return _mqtt
+
+def mqtt_led(on: bool):
+    _get_client().publish(TOPIC_LED, "on" if on else "off", qos=0, retain=False)
+
+def mqtt_servo(angle: int):
+    _get_client().publish(TOPIC_SERVO, str(int(angle)), qos=0, retain=False)
+
+
 # ==== Mini estilos (UI) ====
 st.markdown(
     """
@@ -72,16 +96,23 @@ class HwBridge:
         self.servo_angle = 0
         self.last_med = None
 
-    def set_led(self, state: str):
-        self.led_state = state
-        # Real: enviar por serial/mqtt
-        # serial.write(json.dumps({"type":"act","led":state}).encode())
+  def set_led(on: bool, reason: str = ""):
+    st.session_state.led_on = on
+    st.session_state.last_command = f"{'ON' if on else 'OFF'} @ {datetime.now().strftime('%H:%M:%S')} {reason}".strip()
+    # >>> envia a Wokwi:
+    try:
+        mqtt_led(on)
+    except Exception as e:
+        st.warning(f"MQTT no disponible: {e}")
 
-    def point_servo(self, angle: int, med_name: str|None=None):
-        self.servo_angle = int(angle)
-        self.last_med = med_name
-        # Real: enviar {"type":"act","servo_angle": angle}
-
+ def set_servo(angle: int, reason: str = ""):
+    st.session_state.servo_angle = angle
+    st.session_state.last_command = f"Servo → {angle}° @ {datetime.now().strftime('%H:%M:%S')} {reason}".strip()
+    # >>> envia a Wokwi:
+    try:
+        mqtt_servo(angle)
+    except Exception as e:
+        st.warning(f"MQTT no disponible: {e}")
 
 if "hw" not in st.session_state:
     st.session_state.hw = HwBridge()
@@ -208,24 +239,3 @@ if page == "Wake Word → LED":
 else:
     page_dispenser()
 
-BROKER = "test.mosquitto.org"
-TOPIC_LED = "migue/demo/led"
-TOPIC_SERVO = "migue/demo/servo"
-
-_client = None
-def mqtt_client():
-    global _client
-    if _client: return _client
-    c = mqtt.Client(client_id="streamlit-"+__name__)
-    c.connect(BROKER, 1883, 60)
-    _client = c
-    return c
-
-def led_on():
-    mqtt_client().publish(TOPIC_LED, "on", qos=0, retain=False)
-
-def led_off():
-    mqtt_client().publish(TOPIC_LED, "off", qos=0, retain=False)
-
-def servo_to(angle:int):
-    mqtt_client().publish(TOPIC_SERVO, str(int(angle)), qos=0, retain=False)
