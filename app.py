@@ -216,7 +216,64 @@ def page_dispenser():
         st.caption("Sugeridos: 45°, 90°, 135°")
 
     st.divider()
-    st.subheader("Señalar medicamento")
+    st.subheader("Control por voz")
+
+    st.markdown(
+        "<div class='card'><div class='title'>🎙️ Di el nombre del medicamento</div>"
+        "<div class='muted'>Ejemplo: “losartan”, “metformina”, “vitamina D”. "
+        "El sistema intentará encontrar el medicamento configurado cuyo nombre coincida.</div></div>",
+        unsafe_allow_html=True
+    )
+
+    if not MIC_OK:
+        st.error("No se encontró el componente de micrófono. Instala con: pip install streamlit-mic-recorder")
+    else:
+        # Usamos una clave distinta a la de la otra página para no mezclar estados
+        transcript_med = speech_to_text(
+            language='es',
+            use_container_width=True,
+            just_once=True,
+            key='stt_meds'
+        )
+
+        if transcript_med:
+            st.info(f"Transcripción: **{transcript_med}**")
+            texto = transcript_med.lower()
+
+            matched = None
+            # Buscamos un medicamento cuya “palabra clave” esté en lo que dijo la persona
+            for m in st.session_state.angle_meds:
+                # Palabra clave: primera palabra del nombre (ej. "Losartan" de "Losartan 50mg")
+                keywords = m['name'].split()
+                if not keywords:
+                    continue
+                clave = keywords[0].lower()
+                if clave in texto:
+                    matched = m
+                    break
+
+            if matched:
+                st.session_state.hw.point_servo(matched['angle'], med_name=matched['name'])
+                log("point_med_voice", {"name": matched['name'], "angle": matched['angle'], "source": "voice"})
+                st.success(f"Medicamento reconocido: **{matched['name']}** → Servo a {matched['angle']}°")
+            else:
+                st.warning("No se reconoció ningún medicamento en la transcripción. Intenta decir claramente el nombre.")
+
+    st.divider()
+    st.subheader("Señalar medicamento (botones)")
+    cols = st.columns(3)
+    for i, m in enumerate(st.session_state.angle_meds):
+        with cols[i % 3]:
+            st.markdown(
+                f"<div class='card'><div class='title'>{m['name']}</div>"
+                f"<div class='muted'>Ángulo: {m['angle']}°</div></div>",
+                unsafe_allow_html=True
+            )
+            if st.button(f"Señalar {m['name']}"):
+                st.session_state.hw.point_servo(m['angle'], med_name=m['name'])
+                log("point_med", {"name": m['name'], "angle": m['angle']})
+                st.success(f"Servo apuntando a {m['name']} ({m['angle']}°)")
+
     cols = st.columns(3)
     for i, m in enumerate(st.session_state.angle_meds):
         with cols[i % 3]:
