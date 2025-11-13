@@ -46,7 +46,7 @@ try:
 except Exception:
     MQTT_OK = False
 
-BROKER = "test.mosquitto.org"
+BROKER = "broker.mqttdashboard.com"
 TOPIC_LED = "migue/demo/led"       # cambia por algo único si quieres
 TOPIC_SERVO = "migue/demo/servo"   # idem
 
@@ -145,6 +145,14 @@ def page_wake_word():
 
     st.markdown('<div class="card"><div class="title">🎙️ Escucha por micrófono</div><div class="muted">Di la palabra de atención para encender el LED.</div></div>', unsafe_allow_html=True)
 
+    # Botón grande como alternativa a la voz
+    st.markdown('<div class="card"><div class="title">🆘 Botón de ayuda</div><div class="muted">Si no quieres usar la voz, también puedes encender el LED desde aquí.</div></div>', unsafe_allow_html=True)
+    if st.button("🚨 Necesito ayuda (botón)"):
+        st.session_state.hw.set_led("on")
+        log("led_on_button", {"source": "button"})
+        st.success("LED de ayuda: ENCENDIDO por botón")
+        st.session_state.led_on_since = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+  
     if not MIC_OK:
         st.error("No se encontró el componente de micrófono. Instala con: pip install streamlit-mic-recorder")
     else:
