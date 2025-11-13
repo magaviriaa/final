@@ -203,9 +203,9 @@ def page_dispenser():
     # Config sencilla de 3 medicamentos
     if 'angle_meds' not in st.session_state:
         st.session_state.angle_meds = [
-            {"name": "Med A", "angle": 45},
-            {"name": "Med B", "angle": 90},
-            {"name": "Med C", "angle": 135},
+            {"name": "Losartan", "angle": 45},
+            {"name": "Acetaminofen", "angle": 90},
+            {"name": "Lírica", "angle": 135},
         ]
 
     with st.expander("Configurar nombres/ángulos", expanded=False):
